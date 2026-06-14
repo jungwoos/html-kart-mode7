@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>HTML 카트 (Mode 7)</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#000;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; color:#fff;
+    touch-action:none; user-select:none; -webkit-user-select:none; }
+  #game { position:fixed; inset:0; display:block; width:100%; height:100%; background:#111; }
+
+  /* HUD */
+  #hud { position:fixed; top:8px; left:8px; right:8px; display:flex; justify-content:space-between;
+    pointer-events:none; font-weight:700; text-shadow:0 2px 4px rgba(0,0,0,.7); }
+  #hud .box { background:rgba(0,0,0,.35); padding:6px 10px; border-radius:10px; line-height:1.3; }
+  #speedo { font-size:22px; } #speedo small { font-size:12px; opacity:.8; }
+  #laps { font-size:16px; } #status { font-size:12px; opacity:.85; }
+
+  /* 터치 컨트롤 */
+  .ctl { position:fixed; bottom:0; display:flex; gap:12px; padding:18px; pointer-events:none; }
+  #ctlLeft { left:0; } #ctlRight { right:0; }
+  .btn { pointer-events:auto; width:78px; height:78px; border-radius:50%;
+    background:rgba(255,255,255,.14); border:2px solid rgba(255,255,255,.35);
+    color:#fff; font-size:30px; font-weight:800; display:flex; align-items:center; justify-content:center;
+    backdrop-filter:blur(4px); }
+  .btn:active, .btn.on { background:rgba(255,255,255,.4); }
+  #gas { background:rgba(80,220,120,.3); border-color:rgba(120,255,160,.6); }
+  #brake { background:rgba(255,90,90,.3); border-color:rgba(255,140,140,.6); }
+  .hide { display:none !important; }
+
+  /* 시작 화면 */
+  #menu { position:fixed; inset:0; background:linear-gradient(160deg,#1a2a6c,#b21f1f,#1a2a6c);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:24px; text-align:center; }
+  #menu h1 { font-size:30px; letter-spacing:1px; }
+  #menu p { font-size:13px; opacity:.9; max-width:520px; line-height:1.5; }
+  .modes { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-top:6px; }
+  .mode { padding:12px 16px; border-radius:12px; border:2px solid rgba(255,255,255,.4);
+    background:rgba(0,0,0,.25); font-weight:700; cursor:pointer; font-size:15px; }
+  .mode.sel { background:#fff; color:#1a2a6c; }
+  .bigbtn { margin-top:8px; padding:14px 30px; font-size:18px; font-weight:800; border:none; border-radius:14px;
+    background:#ffd23f; color:#222; cursor:pointer; }
+  .small { font-size:12px; opacity:.85; }
+  #warn { color:#ffd23f; font-weight:700; }
+  #orient { position:fixed; inset:0; background:rgba(0,0,0,.92); display:none; flex-direction:column;
+    align-items:center; justify-content:center; gap:14px; font-size:18px; z-index:50; }
+</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="hud" class="hide">
+    <div class="box" id="laps">LAP 1/3<br><span id="laptime">0.00</span></div>
+    <div class="box" id="speedo">0<small> km/h</small></div>
+    <div class="box" id="status">—</div>
+  </div>
+
+  <!-- 터치/기울기 모드용 조향·가속 버튼 -->
+  <div id="ctlLeft" class="ctl hide">
+    <div class="btn" id="steerL">◀</div>
+    <div class="btn" id="steerR">▶</div>
+  </div>
+  <div id="ctlRight" class="ctl hide">
+    <div class="btn" id="brake">⏹</div>
+    <div class="btn" id="gas">▲</div>
+  </div>
+
+  <!-- 시작 메뉴 -->
+  <div id="menu">
+    <h1>🏎️ HTML 카트 — Mode 7</h1>
+    <p>조작 방식을 고르고 출발하세요. 게임패드는 블루투스로 페어링 후 자동 인식됩니다.</p>
+    <div class="modes">
+      <div class="mode" data-mode="gamepad">🎮 게임패드</div>
+      <div class="mode sel" data-mode="tilt">📱 기울기(핸들)</div>
+      <div class="mode" data-mode="touch">👆 터치</div>
+    </div>
+    <p id="warn"></p>
+    <button class="bigbtn" id="startBtn">센서 켜기 · 보정 후 출발 ▶</button>
+    <p class="small">기울기 모드: 출발 시 폰을 평소 잡는 자세로 들면 그 각도가 0점이 됩니다.<br>
+    좌우로 기울이면 핸들처럼 커브가 돕니다. 가속/브레이크는 화면 버튼.</p>
+    <p class="small" id="gpStatus">게임패드: 미연결</p>
+  </div>
+
+  <!-- 세로모드 경고 -->
+  <div id="orient">📱➡️ 가로로 돌려 주세요</div>
+
+<script>
+"use strict";
+/* ============================================================
+   HTML 카트 — Mode 7 유사 3D 레이서
+   입력: 게임패드(Gamepad API) / 기울기(DeviceOrientation) / 터치
+   주의: 기울기 센서는 HTTPS 또는 localhost(secure context)에서만 동작.
+   ============================================================ */
+
+// ---------- 캔버스 / 내부 버퍼 ----------
+const display = document.getElementById('game');
+const dctx = display.getContext('2d');
+const IW = 320, IH = 180;                 // 내부 렌더 해상도(저해상→확대)
+const HORIZON = 64;                        // 지평선 y
+const buf = document.createElement('canvas'); buf.width = IW; buf.height = IH;
+const bctx = buf.getContext('2d');
+const screenImg = bctx.createImageData(IW, IH);
+const sd = screenImg.data;
+
+function resize(){
+  const dpr = Math.min(window.devicePixelRatio||1, 2);
+  display.width = Math.floor(window.innerWidth*dpr);
+  display.height = Math.floor(window.innerHeight*dpr);
+  dctx.imageSmoothingEnabled = false;
+  checkOrient();
+}
+window.addEventListener('resize', resize);
+
+function checkOrient(){
+  const o = document.getElementById('orient');
+  const portrait = window.innerHeight > window.innerWidth * 1.1;
+  o.style.display = (running && portrait) ? 'flex' : 'none';
+}
+
+// ---------- 트랙 맵(탑다운) 생성 ----------
+const MAP = 1024;
+const map = document.createElement('canvas'); map.width = MAP; map.height = MAP;
+const mctx = map.getContext('2d');
+let mapData;                               // Uint8ClampedArray (노면 판정 + 샘플링)
+
+// 도로 중심선 경로(맵 좌표). 닫힌 루프.
+const PATH = [
+  [240,240],[540,180],[780,260],[860,480],[760,700],[520,800],
+  [300,760],[180,560],[160,380]
+];
+const FINISH = { x:240, y:240 };           // 결승선 위치(첫 점)
+const CHECK  = { x:760, y:700 };           // 반대편 체크포인트
+
+function buildTrack(){
+  // 풀밭
+  mctx.fillStyle = '#3a8f3a'; mctx.fillRect(0,0,MAP,MAP);
+  // 풀밭 질감(점)
+  mctx.fillStyle = 'rgba(0,0,0,0.06)';
+  for(let i=0;i<3000;i++){ const x=Math.random()*MAP,y=Math.random()*MAP; mctx.fillRect(x,y,3,3); }
+
+  // 도로(굵은 닫힌 곡선) — 가장자리(검정) 그리고 그 위 회색
+  mctx.lineJoin='round'; mctx.lineCap='round';
+  function strokePath(w,color){
+    mctx.beginPath();
+    mctx.moveTo(PATH[0][0],PATH[0][1]);
+    for(let i=1;i<PATH.length;i++) mctx.lineTo(PATH[i][0],PATH[i][1]);
+    mctx.closePath(); mctx.lineWidth=w; mctx.strokeStyle=color; mctx.stroke();
+  }
+  strokePath(108,'#1b1b1b');   // 도로 테두리
+  strokePath(96,'#888888');    // 아스팔트
+
+  // 중앙 점선
+  mctx.setLineDash([26,26]); strokePath(5,'#f5f5b0'); mctx.setLineDash([]);
+
+  // 결승선(체커)
+  drawChecker(FINISH.x, FINISH.y, PATH[1]);
+
+  mapData = mctx.getImageData(0,0,MAP,MAP).data;
+}
+
+function drawChecker(x,y,next){
+  const ang = Math.atan2(next[1]-y, next[0]-x) + Math.PI/2;
+  mctx.save(); mctx.translate(x,y); mctx.rotate(ang);
+  const w=96, h=18, c=8, cw=w/c;
+  for(let i=0;i<c;i++){
+    mctx.fillStyle = (i%2)?'#fff':'#111';
+    mctx.fillRect(-w/2 + i*cw, -h/2, cw, h/2);
+    mctx.fillStyle = (i%2)?'#111':'#fff';
+    mctx.fillRect(-w/2 + i*cw, 0, cw, h/2);
+  }
+  mctx.restore();
+}
+
+// 맵 픽셀 샘플 → [r,g,b]
+function sample(x,y){
+  if(x<0||y<0||x>=MAP||y>=MAP) return null; // 맵 밖 = 풀밭 취급
+  const i = ((y|0)*MAP + (x|0))*4;
+  return [mapData[i], mapData[i+1], mapData[i+2]];
+}
+// 도로 위인가? (회색/흰/노랑 계열이면 도로, 초록 우세면 풀)
+function isRoad(x,y){
+  const p = sample(x,y); if(!p) return false;
+  return !(p[1] > p[0] + 24 && p[1] > p[2] + 24); // 초록 우세가 아니면 도로
+}
+
+// ---------- Mode 7 렌더 ----------
+const CAM_H = 90;     // 카메라 높이(픽셀)
+const FOCAL = 140;    // 초점거리 느낌
+function renderMode7(camX, camY, heading){
+  const cosA = Math.cos(heading), sinA = Math.sin(heading);
+  // 하늘
+  for(let y=0;y<HORIZON;y++){
+    const t = y/HORIZON;
+    const r=80+t*100, g=140+t*90, b=220+t*30;
+    for(let x=0;x<IW;x++){ const o=(y*IW+x)*4; sd[o]=r; sd[o+1]=g; sd[o+2]=b; sd[o+3]=255; }
+  }
+  const halfW = IW/2;
+  for(let y=HORIZON;y<IH;y++){
+    const p = y - HORIZON + 1;
+    const worldZ = (CAM_H * FOCAL) / p;          // 이 스캔라인까지 전방 거리
+    const scale = worldZ / FOCAL;                // 화면 1px당 월드 px
+    // 라인 중앙의 월드 좌표(카트 전방)
+    const cx = camX + cosA * worldZ;
+    const cy = camY + sinA * worldZ;
+    // 화면 오른쪽으로 1px 이동 시 월드 변화(전방의 수직 방향)
+    const stepX = -sinA * scale;
+    const stepY =  cosA * scale;
+    let wx = cx - stepX * halfW;
+    let wy = cy - stepY * halfW;
+    // 거리감 안개(멀수록 어둡게→밝게 보정)
+    const fog = Math.min(1, p/ (IH-HORIZON));
+    for(let x=0;x<IW;x++){
+      const o = (y*IW+x)*4;
+      let r,g,b;
+      if(wx<0||wy<0||wx>=MAP||wy>=MAP){ r=58; g=143; b=58; }      // 밖=풀밭
+      else { const i=((wy|0)*MAP+(wx|0))*4; r=mapData[i]; g=mapData[i+1]; b=mapData[i+2]; }
+      // 안개(지평선쪽으로 하늘색과 블렌딩)
+      const f = 1-fog;
+      sd[o]   = r*(fog) + 150*f;
+      sd[o+1] = g*(fog) + 190*f;
+      sd[o+2] = b*(fog) + 235*f;
+      sd[o+3] = 255;
+      wx += stepX; wy += stepY;
+    }
+  }
+  bctx.putImageData(screenImg,0,0);
+}
+
+// 카트 스프라이트(화면 하단 중앙)
+function drawKart(steer){
+  const cx = IW/2, cy = IH-26, lean = steer*8;
+  bctx.save(); bctx.translate(cx,cy);
+  // 그림자
+  bctx.fillStyle='rgba(0,0,0,.35)'; bctx.beginPath(); bctx.ellipse(0,16,30,8,0,0,7); bctx.fill();
+  // 뒷바퀴
+  bctx.fillStyle='#111'; bctx.fillRect(-30,-2,12,18); bctx.fillRect(18,-2,12,18);
+  // 차체
+  bctx.fillStyle='#e23'; bctx.beginPath();
+  bctx.moveTo(-22+lean*0.3,-14); bctx.lineTo(22+lean*0.3,-14);
+  bctx.lineTo(28,14); bctx.lineTo(-28,14); bctx.closePath(); bctx.fill();
+  // 운전석
+  bctx.fillStyle='#ffd23f'; bctx.beginPath(); bctx.arc(lean*0.4,-10,9,0,7); bctx.fill();
+  bctx.restore();
+}
+
+// ---------- 게임 상태/물리 ----------
+const state = { x:FINISH.x, y:FINISH.y+30, heading:Math.PI*1.05, speed:0 };
+let running=false, mode='tilt';
+let lap=1, totalLaps=3, lapStart=0, lastFinishSide=0, hitCheck=false;
+const MAX_SPEED=7.0, ACCEL=0.10, BRAKE=0.16, FRICTION=0.04, TURN=0.045, OFFROAD=2.6;
+
+function resetRace(){
+  state.x=FINISH.x; state.y=FINISH.y+30; state.heading=Math.PI*1.05; state.speed=0;
+  lap=1; hitCheck=false; lapStart=performance.now();
+}
+
+function updatePhysics(steer, throttle, brake){
+  // 가감속
+  state.speed += throttle*ACCEL;
+  state.speed -= brake*BRAKE;
+  state.speed -= FRICTION;                       // 기본 마찰
+  if(state.speed<0) state.speed=0;
+  const onRoad = isRoad(state.x, state.y);
+  const cap = onRoad ? MAX_SPEED : OFFROAD;      // 풀밭이면 최고속 제한
+  if(state.speed>cap) state.speed = Math.max(cap, state.speed-0.3);
+  // 조향(속도 있을 때만 의미)
+  state.heading += steer * TURN * Math.min(1, state.speed/2);
+  // 이동
+  state.x += Math.cos(state.heading) * state.speed;
+  state.y += Math.sin(state.heading) * state.speed;
+
+  // 랩 판정: 체크포인트 통과 후 결승선 부근 재진입
+  const dC = Math.hypot(state.x-CHECK.x, state.y-CHECK.y);
+  if(dC < 70) hitCheck = true;
+  const dF = Math.hypot(state.x-FINISH.x, state.y-FINISH.y);
+  if(dF < 70 && hitCheck){
+    hitCheck=false;
+    lap++;
+    lapStart = performance.now();
+    if(lap>totalLaps){ /* 완주 */ lap=totalLaps; }
+  }
+}
+
+// ---------- 입력 ----------
+const keys={}, touch={ left:false,right:false,gas:false,brake:false };
+window.addEventListener('keydown',e=>keys[e.key.toLowerCase()]=true);
+window.addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+
+// 기울기
+let tiltGamma=0, tiltZero=0, tiltActive=false;
+function onOrient(e){ if(e.gamma!=null){ tiltGamma=e.gamma; tiltActive=true; } }
+function enableTilt(){
+  // iOS 13+ 권한
+  if(typeof DeviceOrientationEvent!=='undefined' &&
+     typeof DeviceOrientationEvent.requestPermission==='function'){
+    DeviceOrientationEvent.requestPermission().then(s=>{
+      if(s==='granted') window.addEventListener('deviceorientation', onOrient);
+    }).catch(()=>{});
+  } else {
+    window.addEventListener('deviceorientation', onOrient);
+  }
+}
+function calibrateTilt(){ tiltZero = tiltGamma; }
+
+// 게임패드
+let gpIndex=null;
+window.addEventListener('gamepadconnected', e=>{ gpIndex=e.gamepad.index; updateGpStatus(); });
+window.addEventListener('gamepaddisconnected', ()=>{ gpIndex=null; updateGpStatus(); });
+function updateGpStatus(){
+  const el=document.getElementById('gpStatus');
+  if(el) el.textContent = '게임패드: ' + (gpIndex!=null?'연결됨 ✅':'미연결');
+}
+
+function readInput(){
+  let steer=0, throttle=0, brake=0;
+  // 공용: 키보드(데스크톱 테스트)
+  if(keys['arrowleft']||keys['a']) steer-=1;
+  if(keys['arrowright']||keys['d']) steer+=1;
+  if(keys['arrowup']||keys['w']) throttle=1;
+  if(keys['arrowdown']||keys['s']) brake=1;
+
+  if(mode==='gamepad' && gpIndex!=null){
+    const gp = navigator.getGamepads()[gpIndex];
+    if(gp){
+      const ax = gp.axes[0]||0; if(Math.abs(ax)>0.15) steer = ax;
+      const rt = gp.buttons[7]?gp.buttons[7].value:0;
+      const lt = gp.buttons[6]?gp.buttons[6].value:0;
+      throttle = Math.max(throttle, rt, gp.buttons[0]&&gp.buttons[0].pressed?1:0);
+      brake = Math.max(brake, lt, gp.buttons[1]&&gp.buttons[1].pressed?1:0);
+    }
+  } else if(mode==='tilt'){
+    const g = tiltGamma - tiltZero;
+    const dead=3, maxT=30;
+    let s = Math.abs(g)<dead ? 0 : (g - Math.sign(g)*dead)/(maxT-dead);
+    s = Math.max(-1, Math.min(1, s));
+    steer = s;
+    // 가속/브레이크는 터치 버튼
+    if(touch.gas) throttle=1; if(touch.brake) brake=1;
+  } else if(mode==='touch'){
+    if(touch.left) steer-=1; if(touch.right) steer+=1;
+    if(touch.gas) throttle=1; if(touch.brake) brake=1;
+  }
+  return { steer:Math.max(-1,Math.min(1,steer)), throttle, brake };
+}
+
+// ---------- HUD ----------
+const elSpeed=document.getElementById('speedo');
+const elLaps=document.getElementById('laps');
+const elLapTime=document.getElementById('laptime');
+const elStatus=document.getElementById('status');
+function updateHUD(inp){
+  elSpeed.innerHTML = Math.round(state.speed*30) + '<small> km/h</small>';
+  elLaps.innerHTML = 'LAP '+Math.min(lap,totalLaps)+'/'+totalLaps;
+  elLapTime.textContent = ((performance.now()-lapStart)/1000).toFixed(2);
+  let m = mode==='gamepad'?'🎮':mode==='tilt'?'📱':'👆';
+  let extra = mode==='tilt' ? ('  기울기 '+(tiltGamma-tiltZero).toFixed(0)+'°') :
+              mode==='gamepad' ? (gpIndex!=null?'  연결됨':'  미연결') : '';
+  elStatus.textContent = m+extra;
+}
+
+// ---------- 메인 루프 ----------
+function loop(){
+  if(running){
+    const inp = readInput();
+    updatePhysics(inp.steer, inp.throttle, inp.brake);
+    renderMode7(state.x, state.y, state.heading);
+    drawKart(inp.steer);
+    // 확대 출력
+    dctx.imageSmoothingEnabled=false;
+    dctx.drawImage(buf, 0,0,IW,IH, 0,0,display.width,display.height);
+    updateHUD(inp);
+  }
+  requestAnimationFrame(loop);
+}
+
+// ---------- UI 바인딩 ----------
+function bindHold(id, key){
+  const el=document.getElementById(id);
+  const on=e=>{ e.preventDefault(); touch[key]=true; el.classList.add('on'); };
+  const off=e=>{ e.preventDefault(); touch[key]=false; el.classList.remove('on'); };
+  el.addEventListener('touchstart',on,{passive:false});
+  el.addEventListener('touchend',off,{passive:false});
+  el.addEventListener('touchcancel',off,{passive:false});
+  el.addEventListener('mousedown',on); el.addEventListener('mouseup',off); el.addEventListener('mouseleave',off);
+}
+bindHold('steerL','left'); bindHold('steerR','right');
+bindHold('gas','gas'); bindHold('brake','brake');
+
+document.querySelectorAll('.mode').forEach(m=>{
+  m.addEventListener('click',()=>{
+    document.querySelectorAll('.mode').forEach(x=>x.classList.remove('sel'));
+    m.classList.add('sel'); mode=m.dataset.mode;
+  });
+});
+
+function showControls(){
+  // 게임패드 모드면 터치 조향 숨김(가속버튼은 항상 표시)
+  document.getElementById('ctlLeft').classList.toggle('hide', mode==='gamepad');
+  document.getElementById('ctlRight').classList.toggle('hide', mode==='gamepad');
+}
+
+document.getElementById('startBtn').addEventListener('click', ()=>{
+  if(mode==='tilt') { enableTilt(); setTimeout(calibrateTilt, 300); }
+  document.getElementById('menu').classList.add('hide');
+  document.getElementById('hud').classList.remove('hide');
+  showControls();
+  resetRace();
+  running=true; checkOrient();
+});
+
+// secure context 경고
+(function(){
+  const warn=document.getElementById('warn');
+  const secure = window.isSecureContext;
+  if(!secure){
+    warn.innerHTML='⚠️ 지금 주소는 보안 컨텍스트가 아니라 <b>기울기 센서가 동작하지 않을 수 있어요.</b><br>'+
+      'HTTPS 또는 localhost에서 열어 주세요. (게임패드·터치는 정상 동작)';
+  }
+})();
+
+// ---------- 부팅 ----------
+buildTrack();
+resize();
+updateGpStatus();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
