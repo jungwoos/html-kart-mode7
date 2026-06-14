@@ -1,0 +1,11 @@
+# Render Blueprint — 게임 화면 + 멀티플레이를 단일 서비스로 배포
+# Render 대시보드 → New → Blueprint → 이 저장소 선택하면 아래 서비스가 생성됩니다.
+# 배포 후 https://<service>.onrender.com 으로 접속하면 바로 플레이.
+services:
+  - type: web
+    name: html-kart-mode7
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /healthz

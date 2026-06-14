@@ -1,7 +1,8 @@
-# 🏎️ HTML 카트 — Mode 7
+# 🏎️ HTML 카트 — Mode 7 (+ 온라인 멀티플레이)
 
-순수 HTML/JS 단일 파일로 만든 유사 3D(Mode 7) 카트 레이싱 게임.
-외부 라이브러리 없이 `index.html` 하나로 동작합니다.
+유사 3D(Mode 7) 카트 레이싱 게임. 게임 화면(정적)과 멀티플레이 WebSocket 서버를
+**하나의 Render 서비스**로 함께 배포합니다. 같은 오리진(HTTPS)이라 기울기 센서도 동작하고,
+멀티 접속 시 서버 주소를 따로 입력할 필요가 없습니다.
 
 ## 조작 방식 (3종)
 
@@ -15,30 +16,44 @@
 - **기울기**: 출발 시 잡은 각도를 0점으로 자동 보정 → 핸들처럼 좌우로 기울여 커브 (DeviceOrientation API)
 - **터치 / 키보드(↑↓←→, WASD)** 도 지원
 
-## 실행
+## 멀티플레이
 
-### 1) 그냥 플레이 (게임패드 · 터치)
-`index.html`을 브라우저로 열면 됩니다.
+- 시작 화면에서 **닉네임 + 방 코드**를 입력하고 `🌐 멀티로 출발`
+- 같은 방 코드를 입력한 사람끼리 함께 달립니다 (방당 최대 8명)
+- 각 클라이언트가 자기 카트 상태를 ~15Hz로 전송, 서버는 같은 방에 중계 (relay)
+- 상대 카트는 닉네임표와 함께 Mode 7 화면에 렌더링됩니다
 
-### 2) 기울기 센서까지 쓰려면 — HTTPS 또는 localhost 필요
-기기 방향 센서는 **보안 컨텍스트(secure context)** 에서만 동작합니다.
-`file://` 로 열면 게임패드·터치는 되지만 기울기는 막힙니다.
+## 구조
 
-가장 쉬운 방법(안드로이드 USB 연결):
-
-```bash
-python3 -m http.server 8000        # PC에서 서버 실행
-adb reverse tcp:8000 tcp:8000      # 폰의 localhost를 PC로 포워딩
+```
+public/index.html   게임 클라이언트 (단일 HTML, 외부 의존성 0)
+server.js           정적 파일 서빙 + WebSocket 중계 (같은 포트)
+package.json        ws 의존성, start: node server.js
+render.yaml         Render Blueprint (원클릭 배포)
 ```
 
-→ 폰 Chrome에서 `http://localhost:8000` 접속 (localhost 라서 센서 동작)
+## 배포 (Render)
 
-### 3) GitHub Pages 로 호스팅
-Settings → Pages → Branch `main` / `/root` 선택하면
-`https://<사용자명>.github.io/html-kart-mode7/` 에서 HTTPS로 바로 플레이 (기울기 센서 포함).
+1. 이 저장소를 Render에 연결: 대시보드 → **New → Blueprint** → 저장소 선택
+   (`render.yaml` 의 무료 web 서비스가 생성됨)
+2. 배포 완료 후 `https://<서비스명>.onrender.com` 으로 접속하면 바로 플레이
+3. HTTPS라서 안드로이드 폰 Chrome에서 **기울기 센서·게임패드·멀티** 모두 동작
+
+> 무료 플랜은 일정 시간 미사용 시 슬립 → 첫 접속이 ~30초 걸릴 수 있습니다.
+
+## 로컬 실행
+
+```bash
+npm install
+npm start            # http://localhost:8080 (PORT 환경변수로 변경 가능)
+```
+
+→ 브라우저에서 `http://localhost:8080`. localhost는 secure context라 센서까지 테스트 가능.
+안드로이드 USB 연결 시 `adb reverse tcp:8080 tcp:8080` 후 폰에서 `http://localhost:8080`.
 
 ## 기술
 
 - Mode 7 스타일 per-scanline 원근 투영 (저해상도 내부 버퍼 → 확대)
 - 절차적 생성 트랙(탑다운 비트맵 샘플링 + 노면 판정)
-- 랩 카운트 / 속도계 / 랩 타임 HUD
+- 원격 카트는 렌더러와 동일한 카메라 모델로 월드→화면 투영
+- 랩 카운트 / 속도계 / 랩 타임 / 접속 인원 HUD

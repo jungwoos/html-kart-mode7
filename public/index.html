@@ -41,6 +41,12 @@
   .mode.sel { background:#fff; color:#1a2a6c; }
   .bigbtn { margin-top:8px; padding:14px 30px; font-size:18px; font-weight:800; border:none; border-radius:14px;
     background:#ffd23f; color:#222; cursor:pointer; }
+  #menu input { padding:8px 10px; border-radius:8px; border:1px solid rgba(255,255,255,.4);
+    background:rgba(0,0,0,.3); color:#fff; font-size:14px; }
+  #menu input::placeholder { color:rgba(255,255,255,.55); }
+  .mp { margin-top:12px; border-top:1px solid rgba(255,255,255,.25); padding-top:12px;
+    width:100%; max-width:520px; display:flex; flex-direction:column; align-items:center; gap:6px; }
+  .mprow { display:flex; gap:6px; flex-wrap:wrap; justify-content:center; }
   .small { font-size:12px; opacity:.85; }
   #warn { color:#ffd23f; font-weight:700; }
   #orient { position:fixed; inset:0; background:rgba(0,0,0,.92); display:none; flex-direction:column;
@@ -80,6 +86,17 @@
     <p class="small">기울기 모드: 출발 시 폰을 평소 잡는 자세로 들면 그 각도가 0점이 됩니다.<br>
     좌우로 기울이면 핸들처럼 커브가 돕니다. 가속/브레이크는 화면 버튼.</p>
     <p class="small" id="gpStatus">게임패드: 미연결</p>
+
+    <!-- 멀티플레이 -->
+    <div class="mp">
+      <p class="small">🌐 멀티플레이 — 같은 <b>방 코드</b>를 입력하면 함께 달립니다 (최대 8명)</p>
+      <div class="mprow">
+        <input id="mpName" placeholder="닉네임" value="Player" maxlength="16" style="width:130px">
+        <input id="mpRoom" placeholder="방 코드" value="room1" maxlength="24" style="width:130px">
+      </div>
+      <button class="bigbtn" id="mpBtn" style="background:#4fc3f7;">🌐 멀티로 출발</button>
+      <p class="small" id="mpStatus"></p>
+    </div>
   </div>
 
   <!-- 세로모드 경고 -->
@@ -244,6 +261,43 @@ function drawKart(steer){
   bctx.restore();
 }
 
+// ---------- 멀티: 월드 좌표 → 화면 투영(렌더러와 동일한 카메라 모델) ----------
+function projectToScreen(px,py){
+  const dx=px-state.x, dy=py-state.y;
+  const cosA=Math.cos(state.heading), sinA=Math.sin(state.heading);
+  const fwd  =  dx*cosA + dy*sinA;     // 카메라 전방 거리
+  const side = -dx*sinA + dy*cosA;     // 좌우 오프셋
+  if(fwd < 6) return null;             // 뒤/너무 가까움
+  const sx = IW/2 + side*FOCAL/fwd;
+  const sy = HORIZON + (CAM_H*FOCAL)/fwd;
+  if(sy<HORIZON || sy>IH+30) return null;
+  return { sx, sy, sc: FOCAL/fwd };
+}
+function drawPeerKart(p, color, name){
+  const w=Math.max(5, 38*p.sc), h=Math.max(4, 30*p.sc);
+  bctx.save(); bctx.translate(p.sx, p.sy);
+  bctx.fillStyle='rgba(0,0,0,.3)'; bctx.beginPath(); bctx.ellipse(0,2,w*0.55,h*0.18,0,0,7); bctx.fill();
+  bctx.fillStyle=color; bctx.fillRect(-w/2,-h, w, h);            // 차체
+  bctx.fillStyle='rgba(255,255,255,.85)'; bctx.fillRect(-w*0.26,-h*0.85, w*0.52, h*0.42); // 운전석
+  if(p.sc>0.18 && name){                                         // 가까우면 이름표
+    bctx.font='6px sans-serif'; bctx.textAlign='center';
+    bctx.fillStyle='rgba(0,0,0,.6)'; bctx.fillText(name,0,-h-3);
+    bctx.fillStyle='#fff'; bctx.fillText(name,0,-h-3.5);
+  }
+  bctx.restore();
+}
+function renderPeers(){
+  if(!net.connected) return;
+  const list=[];
+  net.peers.forEach(p=>{
+    if(p.x==null) return;
+    const pr=projectToScreen(p.x,p.y);
+    if(pr){ pr.color=p.color||'#fff'; pr.name=p.name||''; list.push(pr); }
+  });
+  list.sort((a,b)=>a.sy-b.sy);                 // 먼 것(지평선쪽) 먼저 → 가까운 게 위에
+  list.forEach(pr=> drawPeerKart(pr, pr.color, pr.name));
+}
+
 // ---------- 게임 상태/물리 ----------
 const state = { x:FINISH.x, y:FINISH.y+30, heading:Math.PI*1.05, speed:0 };
 let running=false, mode='tilt';
@@ -312,6 +366,47 @@ function updateGpStatus(){
   if(el) el.textContent = '게임패드: ' + (gpIndex!=null?'연결됨 ✅':'미연결');
 }
 
+// ---------- 멀티플레이 네트워킹 (WebSocket 중계) ----------
+const net = { ws:null, id:null, myColor:'#e23', connected:false, peers:new Map(), sendTimer:null };
+function mpConnect(url, room, name, onReady, onErr){
+  let ws;
+  try { ws = new WebSocket(url); } catch(e){ onErr('주소 형식 오류'); return; }
+  net.ws = ws;
+  const failTimer = setTimeout(()=>{ if(!net.connected){ try{ws.close();}catch(e){} onErr('연결 시간 초과 (서버 깨어나는 중일 수 있음, 다시 시도)'); } }, 12000);
+  ws.onopen = ()=> ws.send(JSON.stringify({ type:'join', room, name }));
+  ws.onmessage = (ev)=>{
+    let m; try{ m=JSON.parse(ev.data); }catch(e){ return; }
+    if(m.type==='welcome'){
+      clearTimeout(failTimer);
+      net.id=m.id; net.myColor=m.color||net.myColor; net.connected=true;
+      net.peers.clear();
+      (m.peers||[]).forEach(p=> net.peers.set(p.id, p));
+      onReady();
+    } else if(m.type==='peerJoined'){
+      net.peers.set(m.id, { id:m.id, name:m.name, color:m.color });
+    } else if(m.type==='peerState'){
+      const p = net.peers.get(m.id) || { id:m.id };
+      Object.assign(p, m.s);                     // x,y,h,sp,lap
+      net.peers.set(m.id, p);
+    } else if(m.type==='peerLeft'){
+      net.peers.delete(m.id);
+    } else if(m.type==='full'){
+      clearTimeout(failTimer); onErr('방이 가득 찼습니다 (최대 8명)');
+    }
+  };
+  ws.onerror = ()=>{ clearTimeout(failTimer); onErr('연결 실패 (주소 확인)'); };
+  ws.onclose = ()=>{ net.connected=false; };
+}
+function mpStartSending(){
+  if(net.sendTimer) clearInterval(net.sendTimer);
+  net.sendTimer = setInterval(()=>{
+    if(net.connected && net.ws && net.ws.readyState===1){
+      net.ws.send(JSON.stringify({ type:'state',
+        s:{ x:state.x, y:state.y, h:state.heading, sp:state.speed, lap:lap } }));
+    }
+  }, 66);  // ~15Hz
+}
+
 function readInput(){
   let steer=0, throttle=0, brake=0;
   // 공용: 키보드(데스크톱 테스트)
@@ -356,6 +451,7 @@ function updateHUD(inp){
   let m = mode==='gamepad'?'🎮':mode==='tilt'?'📱':'👆';
   let extra = mode==='tilt' ? ('  기울기 '+(tiltGamma-tiltZero).toFixed(0)+'°') :
               mode==='gamepad' ? (gpIndex!=null?'  연결됨':'  미연결') : '';
+  if(net.connected) extra += '  🌐'+(net.peers.size+1)+'명';
   elStatus.textContent = m+extra;
 }
 
@@ -365,6 +461,7 @@ function loop(){
     const inp = readInput();
     updatePhysics(inp.steer, inp.throttle, inp.brake);
     renderMode7(state.x, state.y, state.heading);
+    renderPeers();
     drawKart(inp.steer);
     // 확대 출력
     dctx.imageSmoothingEnabled=false;
@@ -400,13 +497,41 @@ function showControls(){
   document.getElementById('ctlRight').classList.toggle('hide', mode==='gamepad');
 }
 
-document.getElementById('startBtn').addEventListener('click', ()=>{
+function beginRace(multi){
   if(mode==='tilt') { enableTilt(); setTimeout(calibrateTilt, 300); }
   document.getElementById('menu').classList.add('hide');
   document.getElementById('hud').classList.remove('hide');
   showControls();
   resetRace();
+  if(multi && net.id!=null){
+    // 출발 라인에서 카트끼리 겹치지 않게 좌우로 살짝 분산
+    const lane = (net.id % 4) - 1.5;
+    state.x += -Math.sin(state.heading) * lane * 22;
+    state.y +=  Math.cos(state.heading) * lane * 22;
+    mpStartSending();
+  }
   running=true; checkOrient();
+}
+
+document.getElementById('startBtn').addEventListener('click', ()=> beginRace(false));
+
+const mpBtn=document.getElementById('mpBtn'), mpStatus=document.getElementById('mpStatus');
+const mpRoom=document.getElementById('mpRoom'), mpName=document.getElementById('mpName');
+// 서버는 이 페이지를 서빙한 같은 오리진(Render). ?server= 로만 수동 override 가능.
+function serverURL(){
+  const qp=new URLSearchParams(location.search);
+  if(qp.get('server')) return qp.get('server');
+  const proto = location.protocol==='https:' ? 'wss:' : 'ws:';
+  return proto + '//' + location.host;          // 같은 호스트의 WebSocket
+}
+mpName.value = localStorage.getItem('kartName') || mpName.value;
+mpBtn.addEventListener('click', ()=>{
+  const url=serverURL(), room=(mpRoom.value.trim()||'room1'), name=(mpName.value.trim()||'Player');
+  localStorage.setItem('kartName', name);
+  mpBtn.disabled=true; mpStatus.textContent='연결 중… (무료 서버는 첫 접속 시 깨어나는 데 ~30초)';
+  mpConnect(url, room, name,
+    ()=>{ mpStatus.textContent='연결됨 ✅'; beginRace(true); },
+    (err)=>{ mpBtn.disabled=false; mpStatus.textContent='⚠️ '+err; });
 });
 
 // secure context 경고

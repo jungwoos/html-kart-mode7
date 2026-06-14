@@ -1,0 +1,16 @@
+{
+  "name": "html-kart-mode7",
+  "version": "1.0.0",
+  "description": "HTML Mode 7 kart racer + WebSocket multiplayer, served as one Render service",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
